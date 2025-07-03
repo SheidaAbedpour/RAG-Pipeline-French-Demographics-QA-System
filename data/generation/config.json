@@ -1,0 +1,7 @@
+{
+  "model_name": "meta-llama/Llama-3.3-70B-Instruct-Turbo-Free",
+  "temperature": 0.3,
+  "max_tokens": 512,
+  "setup_timestamp": 1751542598.7699459,
+  "status": "ready"
+}
