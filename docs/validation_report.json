@@ -1,0 +1,35 @@
+{
+  "validation_timestamp": "2025-07-03T12:13:42.383529",
+  "data_summary": {
+    "fixed": {
+      "total_chunks": 70,
+      "mean_size": 363.4,
+      "std_dev": 176.557267115881,
+      "min_size": 27,
+      "max_size": 512
+    },
+    "sentence": {
+      "total_chunks": 81,
+      "mean_size": 357.2716049382716,
+      "std_dev": 171.759019555477,
+      "min_size": 27,
+      "max_size": 576
+    },
+    "semantic": {
+      "total_chunks": 31,
+      "mean_size": 757.6774193548387,
+      "std_dev": 973.6108842891208,
+      "min_size": 27,
+      "max_size": 2913
+    }
+  },
+  "quality_metrics": {
+    "total_chunks": 70,
+    "empty_chunks": 0,
+    "short_chunks": 2,
+    "quality_score": 97.14285714285714
+  },
+  "recommendations": [
+    "Most consistent chunking: semantic"
+  ]
+}
