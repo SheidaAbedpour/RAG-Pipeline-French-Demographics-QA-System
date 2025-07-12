@@ -1,31 +1,39 @@
-from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-import uvicorn
-import os
+"""
+FastAPI server for France RAG system.
+"""
 import sys
-from pathlib import Path
+import os
+import time
 import logging
 from contextlib import asynccontextmanager
-import asyncio
+from pathlib import Path
 from typing import Optional
-import time
+
+from fastapi import FastAPI, HTTPException, Depends
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 # Add src to path
-sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
+sys.path.append(str(Path(__file__).parent))
 
+from config.config import config
 from src.schemas import (
     RetrievalRequest, RetrievalResponse, RetrievalSource,
     GenerationRequest, GenerationResponse, HealthResponse, ErrorResponse
 )
 from src.generation import RAGGenerator, GenerationConfig
-import json
+from src.embedding import EmbeddingModel, EmbeddingConfig
+from src.retrieval.vector_store import VectorStore
+from src.retrieval.hybrid_retriever import HybridRetriever
 
 # Configure logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    level=getattr(logging, config.log_level.upper()),
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 logger = logging.getLogger(__name__)
 
-# Global variables for dependency injection
+# Global state
 rag_generator: Optional[RAGGenerator] = None
 app_metrics = {
     "total_requests": 0,
@@ -36,92 +44,69 @@ app_metrics = {
 }
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Lifespan manager for FastAPI app"""
-    # Startup
-    logger.info("Starting up RAG API...")
-    await startup_event()
-
-    yield
-
-    # Shutdown
-    logger.info("Shutting down RAG API...")
-    await shutdown_event()
-
-
-async def startup_event():
-    """Initialize RAG system on startup"""
+async def initialize_rag_system():
+    """Initialize the RAG system components."""
     global rag_generator
 
     try:
         logger.info("Initializing RAG system...")
 
-        # Get API key
-        api_key = os.getenv('TOGETHER_API_KEY')
-        if not api_key:
-            raise ValueError("TOGETHER_API_KEY environment variable required")
+        # Validate configuration
+        config.validate()
 
-        # Setup retriever
-        data_dir = os.getenv('DATA_DIR', 'data')
-
-        from src.embedding import EmbeddingModel, EmbeddingConfig
-        from src.retrieval.vector_store import VectorStore
-        from src.retrieval.hybrid_retriever import HybridRetriever
-
-        # Load retriever
-        embedding_config = EmbeddingConfig(embedding_type="tfidf")
+        # Setup embedding model
+        embedding_config = EmbeddingConfig(
+            embedding_type=config.embedding_type,
+            max_features=config.max_features
+        )
         embedding_model = EmbeddingModel(embedding_config)
 
-        vector_store = VectorStore(str(Path(data_dir) / "embeddings"))
-        vector_store.load(str(Path(data_dir) / "embeddings" / "vector_store"))
+        # Load vector store
+        vector_store = VectorStore(str(config.embeddings_dir))
+        store_path = config.embeddings_dir / "vector_store"
 
+        if not store_path.exists():
+            raise FileNotFoundError(
+                f"Vector store not found at {store_path}. "
+                "Run create_embeddings.py first."
+            )
+
+        vector_store.load(str(store_path))
+
+        # Setup retriever
         retriever = HybridRetriever(vector_store, embedding_model)
 
         # Setup generation
         generation_config = GenerationConfig(
-            api_key=api_key,
-            model_name=os.getenv('MODEL_NAME', 'meta-llama/Llama-3.3-70B-Instruct-Turbo-Free'),
-            temperature=float(os.getenv('TEMPERATURE', '0.3')),
-            max_tokens=int(os.getenv('MAX_TOKENS', '512'))
+            api_key=config.together_api_key,
+            model_name=config.model_name,
+            temperature=config.temperature,
+            max_tokens=config.max_tokens
         )
 
         rag_generator = RAGGenerator(generation_config, retriever)
 
-        logger.info("RAG system initialized successfully")
+        logger.info("✅ RAG system initialized successfully")
 
     except Exception as e:
-        logger.error(f"Failed to initialize RAG system: {str(e)}")
+        logger.error(f"❌ Failed to initialize RAG system: {str(e)}")
         raise
 
 
-async def shutdown_event():
-    """Cleanup on shutdown"""
-    global rag_generator
-
-    if rag_generator:
-        # Export metrics and history
-        try:
-            output_dir = Path("data") / "api_logs"
-            output_dir.mkdir(parents=True, exist_ok=True)
-
-            # Export generation history
-            rag_generator.export_history(str(output_dir / "generation_history.json"))
-
-            # Export app metrics
-            with open(output_dir / "app_metrics.json", 'w') as f:
-                json.dump(app_metrics, f, indent=2)
-
-            logger.info("Metrics and history exported successfully")
-
-        except Exception as e:
-            logger.error(f"Error exporting metrics: {str(e)}")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage application lifespan."""
+    # Startup
+    await initialize_rag_system()
+    yield
+    # Shutdown
+    logger.info("Shutting down RAG API...")
 
 
-# Initialize FastAPI app
+# Initialize FastAPI
 app = FastAPI(
     title="France RAG API",
-    description="Retrieval-Augmented Generation API for France Geography Data",
+    description="Retrieval-Augmented Generation API for France Geography",
     version="1.0.0",
     lifespan=lifespan
 )
@@ -129,30 +114,18 @@ app = FastAPI(
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
-# Dependency to get RAG generator
-async def get_rag_generator() -> RAGGenerator:
-    """Dependency to get RAG generator instance"""
-    global rag_generator
-    if rag_generator is None:
-        raise HTTPException(status_code=503, detail="RAG system not initialized")
-    return rag_generator
-
-
-# Middleware for request tracking
 @app.middleware("http")
 async def track_requests(request, call_next):
-    """Middleware to track requests"""
-    global app_metrics
-
-    start_time = time.time()
+    """Track request metrics."""
     app_metrics["total_requests"] += 1
+    start_time = time.time()
 
     try:
         response = await call_next(request)
@@ -163,52 +136,73 @@ async def track_requests(request, call_next):
         raise
     finally:
         process_time = time.time() - start_time
-        logger.info(f"Request processed in {process_time:.2f}s")
+        logger.debug(f"Request processed in {process_time:.2f}s")
 
 
-# Health check endpoint
-@app.get("/health", response_model=HealthResponse)
-async def health_check():
-    """Health check endpoint"""
-    global rag_generator, app_metrics
+def get_rag_generator() -> RAGGenerator:
+    """Dependency to get RAG generator."""
+    if rag_generator is None:
+        raise HTTPException(
+            status_code=503,
+            detail="RAG system not initialized"
+        )
+    return rag_generator
 
-    components = {
-        "rag_generator": "healthy" if rag_generator else "unhealthy",
-        "api": "healthy"
+
+@app.get("/")
+async def root():
+    """API information."""
+    return {
+        "name": "France RAG API",
+        "version": "1.0.0",
+        "description": "Retrieval-Augmented Generation for France Geography",
+        "endpoints": {
+            "health": "/health",
+            "retrieve": "/retrieve",
+            "generate": "/generate",
+            "sections": "/sections",
+            "metrics": "/metrics"
+        },
+        "docs": "/docs"
     }
 
-    # Test RAG generator if available
+
+@app.get("/health", response_model=HealthResponse)
+async def health_check():
+    """Health check endpoint."""
+    components = {"api": "healthy"}
+
     if rag_generator:
         try:
-            # Quick test
+            # Quick retrieval test
             test_results = rag_generator.retriever.search("test", k=1)
-            components["retrieval"] = "healthy" if test_results else "unhealthy"
+            components["rag_system"] = "healthy"
+            components["retrieval"] = "healthy" if test_results else "no_data"
         except Exception as e:
-            components["retrieval"] = f"unhealthy: {str(e)}"
+            components["rag_system"] = f"unhealthy: {str(e)}"
+    else:
+        components["rag_system"] = "not_initialized"
 
-    status = "healthy" if all(comp == "healthy" for comp in components.values()) else "unhealthy"
+    status = "healthy" if all(
+        "healthy" in comp for comp in components.values()
+    ) else "unhealthy"
 
-    return HealthResponse(
-        status=status,
-        components=components
-    )
+    return HealthResponse(status=status, components=components)
 
 
-# Retrieval endpoint
 @app.post("/retrieve", response_model=RetrievalResponse)
 async def retrieve_sources(
         request: RetrievalRequest,
-        rag_generator: RAGGenerator = Depends(get_rag_generator)
+        generator: RAGGenerator = Depends(get_rag_generator)
 ):
-    """Retrieve relevant sources for a query"""
-    global app_metrics
+    """Retrieve relevant sources for a query."""
     app_metrics["retrieval_requests"] += 1
 
     try:
-        logger.info(f"Processing retrieval request: {request.query[:50]}...")
+        logger.info(f"Retrieving for: '{request.query[:50]}...'")
 
-        # Retrieve sources
-        results = rag_generator.retriever.search(
+        # Search for relevant chunks
+        results = generator.retriever.search(
             request.query,
             k=request.k,
             section_filter=request.section_filter,
@@ -216,9 +210,8 @@ async def retrieve_sources(
         )
 
         # Convert to response format
-        sources = []
-        for result in results:
-            source = RetrievalSource(
+        sources = [
+            RetrievalSource(
                 chunk_id=result.chunk_id,
                 text=result.text,
                 score=result.score,
@@ -226,40 +219,38 @@ async def retrieve_sources(
                 subsection=result.subsection,
                 metadata=result.metadata
             )
-            sources.append(source)
+            for result in results
+        ]
 
-        response = RetrievalResponse(
+        logger.info(f"Found {len(sources)} relevant sources")
+
+        return RetrievalResponse(
             query=request.query,
             sources=sources,
             metadata={
                 "total_sources": len(sources),
-                "parameters": request.dict()
+                "search_parameters": request.dict()
             }
         )
-
-        logger.info(f"Retrieval completed: {len(sources)} sources found")
-        return response
 
     except Exception as e:
         logger.error(f"Retrieval error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# Generation endpoint
 @app.post("/generate", response_model=GenerationResponse)
 async def generate_answer(
         request: GenerationRequest,
-        rag_generator: RAGGenerator = Depends(get_rag_generator)
+        generator: RAGGenerator = Depends(get_rag_generator)
 ):
-    """Generate an answer using RAG"""
-    global app_metrics
+    """Generate an answer using RAG."""
     app_metrics["generation_requests"] += 1
 
     try:
-        logger.info(f"Processing generation request: {request.query[:50]}...")
+        logger.info(f"Generating answer for: '{request.query[:50]}...'")
 
         # Generate response
-        result = rag_generator.generate_response(
+        result = generator.generate_response(
             request.query,
             k=request.k,
             section_filter=request.section_filter,
@@ -268,83 +259,58 @@ async def generate_answer(
             max_tokens=request.max_tokens
         )
 
-        # Convert sources to response format
-        sources = []
-        for source_data in result["sources"]:
-            source = RetrievalSource(
-                chunk_id=source_data["chunk_id"],
-                text=source_data["text_preview"],
-                score=source_data["score"],
-                section=source_data["section"],
-                subsection=source_data.get("subsection"),
-                metadata={"full_text_available": True}
+        # Convert sources
+        sources = [
+            RetrievalSource(
+                chunk_id=source["chunk_id"],
+                text=source["text_preview"],
+                score=source["score"],
+                section=source["section"],
+                subsection=source.get("subsection"),
+                metadata={"preview": True}
             )
-            sources.append(source)
+            for source in result["sources"]
+        ]
 
-        response = GenerationResponse(
+        logger.info(f"Generated {len(result['answer'])} character answer")
+
+        return GenerationResponse(
             question=result["question"],
             answer=result["answer"],
             sources=sources,
             metadata=result["metadata"]
         )
 
-        logger.info(f"Generation completed: {len(result['answer'])} characters generated")
-        return response
-
     except Exception as e:
         logger.error(f"Generation error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# Metrics endpoint
+@app.get("/sections")
+async def get_sections(generator: RAGGenerator = Depends(get_rag_generator)):
+    """Get available content sections."""
+    try:
+        sections = generator.retriever.get_available_sections()
+        return {"sections": sections}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/metrics")
 async def get_metrics():
-    """Get API metrics"""
-    global app_metrics, rag_generator
-
+    """Get system metrics."""
     metrics = app_metrics.copy()
-    metrics["uptime"] = time.time() - app_metrics["start_time"]
+    metrics["uptime_seconds"] = time.time() - app_metrics["start_time"]
 
     if rag_generator:
-        rag_metrics = rag_generator.get_performance_metrics()
-        metrics["rag_metrics"] = rag_metrics
+        metrics["rag_performance"] = rag_generator.get_performance_metrics()
 
     return metrics
 
 
-# Available sections endpoint
-@app.get("/sections")
-async def get_available_sections(
-        rag_generator: RAGGenerator = Depends(get_rag_generator)
-):
-    """Get available sections for filtering"""
-    try:
-        sections = rag_generator.retriever.get_available_sections()
-        return {"sections": sections}
-    except Exception as e:
-        logger.error(f"Error getting sections: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# Available subsections endpoint
-@app.get("/subsections")
-async def get_available_subsections(
-        section: Optional[str] = None,
-        rag_generator: RAGGenerator = Depends(get_rag_generator)
-):
-    """Get available subsections for filtering"""
-    try:
-        subsections = rag_generator.retriever.get_available_subsections(section)
-        return {"subsections": subsections, "section": section}
-    except Exception as e:
-        logger.error(f"Error getting subsections: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# Error handlers
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request, exc):
-    """Handle HTTP exceptions"""
+    """Handle HTTP exceptions."""
     return JSONResponse(
         status_code=exc.status_code,
         content=ErrorResponse(
@@ -356,48 +322,24 @@ async def http_exception_handler(request, exc):
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request, exc):
-    """Handle general exceptions"""
+    """Handle unexpected exceptions."""
     logger.error(f"Unhandled exception: {str(exc)}")
     return JSONResponse(
         status_code=500,
         content=ErrorResponse(
             error="Internal server error",
-            details=str(exc)
+            details="An unexpected error occurred"
         ).dict()
     )
 
 
-# Root endpoint
-@app.get("/")
-async def root():
-    """Root endpoint with API information"""
-    return {
-        "message": "France RAG API",
-        "version": "1.0.0",
-        "docs": "/docs",
-        "health": "/health",
-        "endpoints": {
-            "retrieve": "/retrieve",
-            "generate": "/generate",
-            "sections": "/sections",
-            "subsections": "/subsections",
-            "metrics": "/metrics"
-        }
-    }
-
-
-# Run the app
 if __name__ == "__main__":
-    # Load environment variables
-    from dotenv import load_dotenv
+    import uvicorn
 
-    load_dotenv()
-
-    # Run the app
     uvicorn.run(
         "main:app",
-        host=os.getenv("HOST", "0.0.0.0"),
-        port=int(os.getenv("PORT", "8000")),
-        reload=os.getenv("RELOAD", "false").lower() == "true",
-        log_level=os.getenv("LOG_LEVEL", "info")
+        host=config.host,
+        port=config.port,
+        reload=False,
+        log_level=config.log_level
     )
