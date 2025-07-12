@@ -1,0 +1,21 @@
+# Core API and processing dependencies
+fastapi
+uvicorn
+pydantic
+requests
+python-dotenv
+
+# Data processing and ML
+numpy
+scikit-learn
+beautifulsoup4
+
+# Streamlit UI
+streamlit
+plotly
+
+# Better embeddings
+sentence-transformers
+
+# Advanced vector store
+faiss-cpu
