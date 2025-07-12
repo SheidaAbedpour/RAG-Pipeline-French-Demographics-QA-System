@@ -1,0 +1,5 @@
+{
+  "embedding_dim": 5000,
+  "num_embeddings": 70,
+  "storage_path": "C:\\Users\\Sonat\\Desktop\\RAG\\RAG-Pipeline\\data\\embeddings"
+}

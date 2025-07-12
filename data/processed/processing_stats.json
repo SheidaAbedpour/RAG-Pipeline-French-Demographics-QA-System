@@ -1,0 +1,43 @@
+{
+  "fixed": {
+    "total_chunks": 70,
+    "avg_chunk_size": 363.24285714285713,
+    "min_chunk_size": 27,
+    "max_chunk_size": 512,
+    "sections": [
+      "The Hercynian massifs",
+      "Plant and animal life",
+      "The younger mountains and adjacent plains",
+      "Drainage",
+      "Soils",
+      "Climate",
+      "The great lowlands",
+      "Land"
+    ],
+    "subsections": [
+      "TheAlsacePlain",
+      "The continental region",
+      "The oceanic region",
+      "TheRhinesystem",
+      "TheMassif Central",
+      "TheLoiresystem",
+      "Animal life",
+      "TheRh\u00f4nesystem",
+      "TheGaronnesystem",
+      "TheMassif Armoricain",
+      "Plant life",
+      "The smaller rivers and the lakes",
+      "Relief",
+      "TheArdennes",
+      "TheParis Basin",
+      "TheAquitaine Basin",
+      "The Mediterranean region",
+      "TheSeinesystem",
+      "The Loire plains",
+      "Pyrenees, Jura, and Alps",
+      "The southern plains",
+      "The Flanders Plain",
+      "TheVosges"
+    ]
+  }
+}
