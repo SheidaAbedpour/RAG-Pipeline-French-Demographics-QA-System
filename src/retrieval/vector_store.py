@@ -1,19 +1,18 @@
 import json
+import logging
 from pathlib import Path
 from typing import List, Dict, Optional
-import numpy as np
 from dataclasses import dataclass
-import logging
+
+import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class RetrievalResult:
-    """Result from retrieval operation"""
+    """Result from a vector similarity search."""
     chunk_id: str
     text: str
     score: float
@@ -25,17 +24,13 @@ class RetrievalResult:
 
 @dataclass
 class RetrievalConfig:
-    """Configuration for retrieval system"""
-    vector_store_type: str = "faiss"  # faiss, chromadb, memory
-    index_type: str = "flat"  # flat, ivf, hnsw
-    distance_metric: str = "cosine"  # cosine, euclidean, dot_product
-    nprobe: int = 10  # for IVF indices
-    ef_search: int = 128  # for HNSW indices
+    """Configuration for retrieval system."""
+    distance_metric: str = "cosine"
     storage_path: str = "data/embeddings"
 
 
 class VectorStore:
-    """Base class for vector stores"""
+    """Simple in-memory vector store with cosine similarity search."""
 
     def __init__(self, storage_path: str = "data/embeddings"):
         self.storage_path = Path(storage_path)
@@ -43,14 +38,14 @@ class VectorStore:
         self.metadata_list = []
         self.embedding_dim = None
 
-        # Create storage directory
+        # Ensure storage directory exists
         self.storage_path.mkdir(parents=True, exist_ok=True)
 
     def add_embeddings(self, embeddings: np.ndarray, metadata: List[Dict]):
-        """Add embeddings with metadata"""
+        """Add embeddings with their metadata to the store."""
         if self.embeddings is None:
-            self.embeddings = embeddings
-            self.metadata_list = metadata
+            self.embeddings = embeddings.copy()
+            self.metadata_list = metadata.copy()
             self.embedding_dim = embeddings.shape[1]
         else:
             self.embeddings = np.vstack([self.embeddings, embeddings])
@@ -59,18 +54,27 @@ class VectorStore:
         logger.info(f"Added {len(embeddings)} embeddings to vector store")
 
     def search(self, query_embedding: np.ndarray, k: int = 5) -> List[RetrievalResult]:
-        """Search for similar embeddings"""
+        """Search for the most similar embeddings using cosine similarity."""
         if self.embeddings is None:
-            raise ValueError("No embeddings available. Add embeddings first.")
+            logger.warning("No embeddings in store")
+            return []
+
+        # Ensure query embedding is 2D
+        if query_embedding.ndim == 1:
+            query_embedding = query_embedding.reshape(1, -1)
 
         # Compute cosine similarity
-        similarities = cosine_similarity(query_embedding.reshape(1, -1), self.embeddings)[0]
+        similarities = cosine_similarity(query_embedding, self.embeddings)[0]
 
-        # Get top-k results
+        # Get top-k indices
         top_indices = np.argsort(similarities)[::-1][:k]
 
+        # Build results
         results = []
         for idx in top_indices:
+            if idx >= len(self.metadata_list):
+                continue
+
             metadata = self.metadata_list[idx]
 
             result = RetrievalResult(
@@ -87,45 +91,73 @@ class VectorStore:
         return results
 
     def save(self, path: str):
-        """Save vector store"""
+        """Save the vector store to disk."""
         save_path = Path(path)
         save_path.mkdir(parents=True, exist_ok=True)
 
-        # Save embeddings
-        np.save(save_path / "embeddings.npy", self.embeddings)
+        if self.embeddings is not None:
+            # Save embeddings
+            np.save(save_path / "embeddings.npy", self.embeddings)
 
-        # Save metadata
-        with open(save_path / "metadata.json", 'w') as f:
-            json.dump(self.metadata_list, f, indent=2)
+            # Save metadata
+            with open(save_path / "metadata.json", 'w', encoding='utf-8') as f:
+                json.dump(self.metadata_list, f, indent=2, ensure_ascii=False)
 
-        # Save config
-        config = {
+        # Save configuration
+        config_data = {
             'embedding_dim': self.embedding_dim,
-            'num_embeddings': len(self.embeddings) if self.embeddings is not None else 0
+            'num_embeddings': len(self.embeddings) if self.embeddings is not None else 0,
+            'storage_path': str(self.storage_path)
         }
 
         with open(save_path / "config.json", 'w') as f:
-            json.dump(config, f, indent=2)
+            json.dump(config_data, f, indent=2)
 
-        logger.info(f"Saved vector store to {path}")
+        logger.info(f"Saved vector store to {save_path}")
 
     def load(self, path: str):
-        """Load vector store"""
+        """Load the vector store from disk."""
         load_path = Path(path)
 
         if not load_path.exists():
             raise FileNotFoundError(f"Vector store path {path} does not exist")
 
         # Load embeddings
-        self.embeddings = np.load(load_path / "embeddings.npy")
+        embeddings_file = load_path / "embeddings.npy"
+        if embeddings_file.exists():
+            self.embeddings = np.load(embeddings_file)
+        else:
+            raise FileNotFoundError(f"Embeddings file not found: {embeddings_file}")
 
         # Load metadata
-        with open(load_path / "metadata.json", 'r') as f:
-            self.metadata_list = json.load(f)
+        metadata_file = load_path / "metadata.json"
+        if metadata_file.exists():
+            with open(metadata_file, 'r', encoding='utf-8') as f:
+                self.metadata_list = json.load(f)
+        else:
+            raise FileNotFoundError(f"Metadata file not found: {metadata_file}")
 
-        # Load config
-        with open(load_path / "config.json", 'r') as f:
-            config = json.load(f)
-            self.embedding_dim = config['embedding_dim']
+        # Load configuration
+        config_file = load_path / "config.json"
+        if config_file.exists():
+            with open(config_file, 'r') as f:
+                config_data = json.load(f)
+                self.embedding_dim = config_data.get('embedding_dim')
 
-        logger.info(f"Loaded vector store from {path}")
+        logger.info(f"Loaded vector store from {load_path}")
+        logger.info(f"  Embeddings: {self.embeddings.shape}")
+        logger.info(f"  Metadata items: {len(self.metadata_list)}")
+
+    def get_stats(self) -> Dict:
+        """Get statistics about the vector store."""
+        if self.embeddings is None:
+            return {"status": "empty"}
+
+        return {
+            "status": "loaded",
+            "num_embeddings": len(self.embeddings),
+            "embedding_dim": self.embedding_dim,
+            "num_metadata": len(self.metadata_list),
+            "sections": list(set(m.get('section', '') for m in self.metadata_list)),
+            "storage_path": str(self.storage_path)
+        }
