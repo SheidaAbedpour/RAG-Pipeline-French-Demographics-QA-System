@@ -1,58 +1,75 @@
 import sys
 import os
 import json
-import argparse
 import time
+import logging
 from pathlib import Path
 import numpy as np
-from typing import List, Dict, Optional, Tuple
-import logging
+from typing import List, Dict, Tuple
 
 # Add src to path
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'src'))
+sys.path.append(str(Path(__file__).parent.parent))
 
+from config.config import config
 from src.embedding import EmbeddingModel, EmbeddingConfig
-from src.retrieval.retrieval_evaluator import create_vector_store, RetrievalEvaluator
-from src.retrieval.vector_store import RetrievalConfig, RetrievalResult
-from src.retrieval.hybrid_retriever import HybridRetriever
 from src.retrieval.vector_store import VectorStore
+from src.retrieval.hybrid_retriever import HybridRetriever
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=getattr(logging, config.log_level.upper()),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
 
-def load_processed_chunks(data_dir: str, chunking_strategy: str = "fixed") -> List[Dict]:
-    """Load processed chunks from JSON file"""
-    chunk_file = "C:\\Users\\Sonat\\Desktop\\RAG\\RAG-Pipeline\\data\\processed\\chunks_fixed.json"
+def load_chunks(strategy: str = "fixed") -> List[Dict]:
+    """Load processed chunks from JSON file."""
+    chunk_file = config.processed_dir / f"chunks_{strategy}.json"
 
-    with open(chunk_file, 'r') as f:
+    if not chunk_file.exists():
+        raise FileNotFoundError(
+            f"Chunks file not found: {chunk_file}\n"
+            "❌ Please run data preprocessing first:\n"
+            "   python scripts/data_preprocessing.py"
+        )
+
+    with open(chunk_file, 'r', encoding='utf-8') as f:
         chunks = json.load(f)
 
     logger.info(f"Loaded {len(chunks)} chunks from {chunk_file}")
     return chunks
 
 
-def create_embeddings(chunks: List[Dict], config: EmbeddingConfig) -> Tuple[np.ndarray, List[Dict]]:
-    """Create embeddings using simple methods"""
-    logger.info("Creating embeddings...")
+def create_embeddings(chunks: List[Dict]) -> Tuple[np.ndarray, List[Dict], EmbeddingModel]:
+    """Create embeddings using configured model."""
+    logger.info(f"Creating embeddings using {config.embedding_type}...")
 
-    # Initialize embedding model
-    embedding_model = EmbeddingModel(config)
+    # Configure embedding model
+    embedding_config = EmbeddingConfig(
+        embedding_type=config.embedding_type,
+        max_features=config.max_features,
+        cache_dir=str(config.embeddings_dir / "cache")
+    )
+
+    # Initialize model
+    embedding_model = EmbeddingModel(embedding_config)
 
     # Extract texts
     texts = [chunk['text'] for chunk in chunks]
+
+    print(f"📊 Processing {len(texts)} text chunks...")
+    print(f"🧮 Embedding type: {config.embedding_type}")
+    if config.embedding_type == "tfidf":
+        print(f"📈 Max features: {config.max_features}")
 
     # Generate embeddings
     start_time = time.time()
     embeddings = embedding_model.encode_batch(texts, show_progress=True)
     end_time = time.time()
 
-    logger.info(f"Generated {len(embeddings)} embeddings in {end_time - start_time:.2f} seconds")
-    logger.info(f"Embedding shape: {embeddings.shape}")
+    print(f"✅ Generated {len(embeddings)} embeddings in {end_time - start_time:.2f}s")
+    print(f"📐 Embedding dimension: {embeddings.shape[1]}")
 
     # Prepare metadata
     metadata = []
@@ -71,109 +88,141 @@ def create_embeddings(chunks: List[Dict], config: EmbeddingConfig) -> Tuple[np.n
     return embeddings, metadata, embedding_model
 
 
+def save_embeddings(embeddings: np.ndarray, metadata: List[Dict]):
+    """Save embeddings and metadata to disk."""
+    print("💾 Saving embeddings and metadata...")
+
+    # Save embeddings
+    embeddings_file = config.embeddings_dir / "embeddings.npy"
+    np.save(embeddings_file, embeddings)
+
+    # Save metadata
+    metadata_file = config.embeddings_dir / "metadata.json"
+    with open(metadata_file, 'w', encoding='utf-8') as f:
+        json.dump(metadata, f, indent=2, ensure_ascii=False)
+
+    print(f"✅ Saved to {config.embeddings_dir}")
+    print(f"   📄 embeddings.npy ({embeddings.nbytes / 1024 / 1024:.1f} MB)")
+    print(f"   📄 metadata.json ({len(metadata)} items)")
+
+
+def setup_vector_store(embeddings: np.ndarray, metadata: List[Dict]) -> VectorStore:
+    """Setup and save vector store."""
+    print("🔍 Setting up vector store...")
+
+    vector_store = VectorStore(str(config.embeddings_dir))
+    vector_store.add_embeddings(embeddings, metadata)
+
+    # Save vector store
+    store_path = config.embeddings_dir / "vector_store"
+    vector_store.save(str(store_path))
+
+    print(f"✅ Vector store saved to {store_path}")
+    return vector_store
+
+
 def test_retrieval(vector_store: VectorStore, embedding_model: EmbeddingModel):
-    """Test the simple retrieval system"""
-    logger.info("Testing simple retrieval system...")
+    """Test the retrieval system with sample queries."""
+    print("\n🧪 Testing retrieval system...")
 
     test_queries = [
         "What are the main mountain ranges in France?",
         "Tell me about France's climate patterns",
         "What rivers flow through France?",
-        "Describe the soil types in France",
-        "What is the vegetation like in France?"
+        "Describe the soil types in France"
     ]
 
     retriever = HybridRetriever(vector_store, embedding_model)
 
     print("\n" + "=" * 60)
-    print("SIMPLE RETRIEVAL TEST RESULTS")
+    print("🔍 RETRIEVAL TEST RESULTS")
     print("=" * 60)
 
     for i, query in enumerate(test_queries):
-        print(f"\nQuery {i + 1}: '{query}'")
+        print(f"\n🔎 Query {i + 1}: '{query}'")
         print("-" * 40)
 
-        results = retriever.search(query, k=3)
+        try:
+            results = retriever.search(query, k=3)
 
-        for j, result in enumerate(results):
-            print(f"  {j + 1}. [{result.chunk_id}] Score: {result.score:.3f}")
-            print(f"     Section: {result.section}")
-            if result.subsection:
-                print(f"     Subsection: {result.subsection}")
-            print(f"     Text: {result.text[:150]}...")
-            print()
+            if results:
+                for j, result in enumerate(results):
+                    print(f"  {j + 1}. [{result.chunk_id}] Score: {result.score:.3f}")
+                    print(f"     📂 Section: {result.section}")
+                    if result.subsection:
+                        print(f"     📁 Subsection: {result.subsection}")
+                    preview = result.text[:120].replace('\n', ' ')
+                    print(f"     📄 Text: {preview}...")
+                    print()
+            else:
+                print("  ⚠️ No results found")
 
-    print(f"\nAvailable sections: {retriever.get_available_sections()}")
+        except Exception as e:
+            print(f"  ❌ Error: {e}")
+
+    # Show available sections
+    sections = retriever.get_available_sections()
+    print(f"📚 Available sections ({len(sections)}): {', '.join(sections)}")
+
+    # Show content stats
+    stats = retriever.get_content_stats()
+    print(f"📊 Content statistics:")
+    print(f"   Total chunks: {stats['total_chunks']}")
+    print(f"   Total sections: {stats['total_sections']}")
+    print(f"   Total subsections: {stats['total_subsections']}")
 
 
 def main():
-    # parser = argparse.ArgumentParser(description='Create embeddings using simple methods')
-    # parser.add_argument('--data-dir', default="C:\\Users\\Sonat\\Desktop\\RAG\\RAG-Pipeline\\data",
-    #                     help='Data directory')
-    # parser.add_argument('--chunking-strategy', default='fixed',
-    #                     choices=['fixed', 'sentence', 'semantic'],
-    #                     help='Chunking strategy to use')
-    # parser.add_argument('--embedding-type', default='tfidf',
-    #                     choices=['tfidf', 'openai', 'huggingface'],
-    #                     help='Embedding type to use')
-    # parser.add_argument('--api-key', default=None,
-    #                     help='API key for OpenAI or Hugging Face')
-    # parser.add_argument('--max-features', type=int, default=5000,
-    #                     help='Max features for TF-IDF')
-    # parser.add_argument('--test-only', action='store_true',
-    #                     help='Only test existing embeddings')
-
-    # args = parser.parse_args()
-
-    embedding_type = 'tfidf'
-    api_key = os.getenv('HUGGINGFACE_API_KEY')
-    chunking_strategy = 'semantic'
-    max_features = 5000
-
-    output_dir = "C:\\Users\\Sonat\\Desktop\\RAG\\RAG-Pipeline\\data\\embeddings"
-    data_dir = "C:\\Users\\Sonat\\Desktop\\RAG\\RAG-Pipeline\\data\\processed"
-
+    """Main execution function."""
     try:
-        # Load chunks
-        chunks = load_processed_chunks(data_dir, chunking_strategy)
+        print("🚀 Starting embedding creation process...")
+        print(f"📁 Data directory: {config.data_dir}")
+        print(f"🧮 Embedding type: {config.embedding_type}")
 
-        # Configure embedding model
-        embedding_config = EmbeddingConfig(
-            embedding_type=embedding_type,
-            api_key=api_key,
-            max_features=max_features,
-            cache_dir=str(output_dir + "\\cache")
-        )
+        # Check if data preprocessing was done
+        if not config.processed_dir.exists():
+            raise FileNotFoundError(
+                f"Processed data directory not found: {config.processed_dir}\n"
+                "❌ Please run data preprocessing first:\n"
+                "   python scripts/data_preprocessing.py"
+            )
+
+        # Load chunks
+        chunks = load_chunks()
 
         # Create embeddings
-        embeddings, metadata, embedding_model = create_embeddings(chunks, embedding_config)
+        embeddings, metadata, embedding_model = create_embeddings(chunks)
 
         # Save embeddings
-        np.save(output_dir + "\\embeddings.npy", embeddings)
-        with open(output_dir + "\\metadata.json", 'w') as f:
-            json.dump(metadata, f, indent=2)
+        save_embeddings(embeddings, metadata)
 
         # Setup vector store
-        vector_store = VectorStore(str(output_dir))
-        vector_store.add_embeddings(embeddings, metadata)
-        vector_store.save(str(output_dir + "\\vector_store"))
-
-        logger.info(f"Saved embeddings to {output_dir}")
+        vector_store = setup_vector_store(embeddings, metadata)
 
         # Test retrieval
         test_retrieval(vector_store, embedding_model)
 
         print("\n" + "=" * 60)
-        print("SIMPLE EMBEDDING CREATION COMPLETE!")
+        print("🎉 EMBEDDING CREATION COMPLETE!")
         print("=" * 60)
-        print(f"✅ Embeddings saved to: {output_dir}")
-        print(f"✅ Embedding type: {embedding_type}")
-        print(f"✅ Chunking strategy: {chunking_strategy}")
+        print(f"✅ Embeddings saved to: {config.embeddings_dir}")
+        print(f"✅ Vector store ready for retrieval")
+        print(f"✅ Processed {len(chunks)} chunks successfully")
+        print(f"✅ System ready for API deployment")
 
+        print("\n🔄 Next steps:")
+        print("   1. Start API: python scripts/run_api.py")
+        print("   2. Test system: python test_system.py")
+        print("   3. Launch UI: python scripts/setup_and_run_app.py")
+
+    except FileNotFoundError as e:
+        print(f"\n❌ {e}")
+        sys.exit(1)
     except Exception as e:
         logger.error(f"Error during embedding creation: {str(e)}")
         import traceback
         traceback.print_exc()
+        print("\n❌ Embedding creation failed!")
         sys.exit(1)
 
 
