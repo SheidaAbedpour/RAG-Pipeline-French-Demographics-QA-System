@@ -24,7 +24,7 @@ def parse_arguments():
     parser.add_argument(
         '--chunking-strategies',
         nargs='+',
-        default=['fixed'],  # Simplified to focus on one strategy
+        default=['fixed', 'sentence', 'semantic'],
         choices=['fixed', 'sentence', 'semantic'],
         help='Chunking strategies to use'
     )

@@ -2,181 +2,168 @@ import numpy as np
 import logging
 from typing import List, Dict, Optional
 from pathlib import Path
-import time
 from dataclasses import dataclass
+from sentence_transformers import SentenceTransformer
 
-from sklearn.feature_extraction.text import TfidfVectorizer
-
-# Configure logging
 logger = logging.getLogger(__name__)
 
 
 @dataclass
 class EmbeddingConfig:
-    """Configuration for embedding generation."""
-    embedding_type: str = "tfidf"  # tfidf, sentence-transformers
-    model_name: str = "all-MiniLM-L6-v2"  # for sentence-transformers
-    max_features: int = 5000  # for TF-IDF
-    ngram_range: tuple = (1, 2)  # for TF-IDF
-    cache_dir: str = "data/embeddings/cache"
+    """Configuration for sentence-transformers embedding."""
+    model_name: str = "sentence-transformers/all-MiniLM-L6-v2"
+    cache_dir: str = "../data/embeddings/cache"
+    normalize_embeddings: bool = True
+    batch_size: int = 32
 
 
 class EmbeddingModel:
-    """Handles embedding generation with multiple backend support."""
+    """Simplified embedding model using sentence-transformers only."""
 
     def __init__(self, config: EmbeddingConfig = None):
         self.config = config or EmbeddingConfig()
-        self.vectorizer = None
-        self.sentence_model = None
-        self.embedding_dim = None
-        self.is_fitted = False
 
         # Create cache directory
         Path(self.config.cache_dir).mkdir(parents=True, exist_ok=True)
 
-        logger.info(f"Initialized embedding model: {self.config.embedding_type}")
+        # Load model
+        logger.info(f"Loading sentence-transformers model: {self.config.model_name}")
+        self.model = SentenceTransformer(self.config.model_name)
+        self.embedding_dim = self.model.get_sentence_embedding_dimension()
 
-    def _setup_tfidf_vectorizer(self, texts: List[str]):
-        """Setup and fit TF-IDF vectorizer."""
-        if self.vectorizer is None:
-            self.vectorizer = TfidfVectorizer(
-                max_features=self.config.max_features,
-                ngram_range=self.config.ngram_range,
-                stop_words='english',
-                lowercase=True,
-                strip_accents='unicode',
-                token_pattern=r'\b[a-zA-Z][a-zA-Z]+\b'  # Only alphabetic tokens
-            )
-
-            # Fit vectorizer
-            logger.info("Fitting TF-IDF vectorizer...")
-            self.vectorizer.fit(texts)
-            self.embedding_dim = len(self.vectorizer.vocabulary_)
-            self.is_fitted = True
-
-            logger.info(f"TF-IDF fitted with {self.embedding_dim} features")
-
-    def _setup_sentence_transformer(self):
-        """Setup sentence transformer model."""
-        try:
-            from sentence_transformers import SentenceTransformer
-
-            if self.sentence_model is None:
-                logger.info(f"Loading sentence transformer: {self.config.model_name}")
-                self.sentence_model = SentenceTransformer(self.config.model_name)
-                self.embedding_dim = self.sentence_model.get_sentence_embedding_dimension()
-                self.is_fitted = True
-
-                logger.info(f"Sentence transformer loaded, dimension: {self.embedding_dim}")
-
-        except ImportError:
-            raise ImportError(
-                "sentence-transformers not installed. "
-                "Install with: pip install sentence-transformers"
-            )
+        logger.info(f"Model loaded, embedding dimension: {self.embedding_dim}")
 
     def encode_batch(self, texts: List[str], show_progress: bool = True) -> np.ndarray:
-        """Encode a batch of texts to embeddings."""
+        """
+        Encode a batch of texts to embeddings.
+
+        Args:
+            texts: List of texts to encode
+            show_progress: Whether to show progress bar
+
+        Returns:
+            numpy array of embeddings
+        """
         if not texts:
             raise ValueError("No texts provided for encoding")
 
-        start_time = time.time()
+        logger.info(f"Encoding {len(texts)} texts...")
 
-        if self.config.embedding_type == "tfidf":
-            self._setup_tfidf_vectorizer(texts)
-            embeddings = self.vectorizer.transform(texts).toarray()
+        # Process in batches if needed
+        if len(texts) > self.config.batch_size:
+            return self._encode_large_batch(texts, show_progress)
 
-        elif self.config.embedding_type == "sentence-transformers":
-            self._setup_sentence_transformer()
-            embeddings = self.sentence_model.encode(
-                texts,
-                show_progress_bar=show_progress,
-                convert_to_numpy=True
-            )
+        # Single batch processing
+        embeddings = self.model.encode(
+            texts,
+            show_progress_bar=show_progress,
+            convert_to_numpy=True,
+            normalize_embeddings=self.config.normalize_embeddings
+        )
 
-        else:
-            raise ValueError(f"Unsupported embedding type: {self.config.embedding_type}")
-
-        end_time = time.time()
-
-        if show_progress:
-            logger.info(
-                f"Generated {len(embeddings)} embeddings "
-                f"(dim: {embeddings.shape[1]}) in {end_time - start_time:.2f}s"
-            )
-
+        logger.info(f"Generated {len(embeddings)} embeddings (dim: {embeddings.shape[1]})")
         return embeddings
 
+    def _encode_large_batch(self, texts: List[str], show_progress: bool) -> np.ndarray:
+        """Process large batches in chunks to avoid memory issues."""
+        embeddings = []
+
+        for i in range(0, len(texts), self.config.batch_size):
+            batch = texts[i:i + self.config.batch_size]
+
+            if show_progress:
+                logger.info(
+                    f"Processing batch {i // self.config.batch_size + 1}/{(len(texts) - 1) // self.config.batch_size + 1}")
+
+            batch_embeddings = self.model.encode(
+                batch,
+                show_progress_bar=False,  # Don't show progress for individual batches
+                convert_to_numpy=True,
+                normalize_embeddings=self.config.normalize_embeddings
+            )
+            embeddings.append(batch_embeddings)
+
+        return np.vstack(embeddings)
+
     def encode_single(self, text: str) -> np.ndarray:
-        """Encode a single text to embedding."""
-        if not self.is_fitted:
-            raise RuntimeError("Model not fitted. Call encode_batch first.")
+        """
+        Encode a single text to embedding.
 
-        if self.config.embedding_type == "tfidf":
-            if self.vectorizer is None:
-                raise RuntimeError("TF-IDF vectorizer not initialized")
-            return self.vectorizer.transform([text]).toarray()[0]
+        Args:
+            text: Text to encode
 
-        elif self.config.embedding_type == "sentence-transformers":
-            if self.sentence_model is None:
-                raise RuntimeError("Sentence transformer not loaded")
-            return self.sentence_model.encode([text], convert_to_numpy=True)[0]
+        Returns:
+            numpy array embedding
+        """
+        if not text.strip():
+            raise ValueError("Empty text provided")
 
-        else:
-            raise ValueError(f"Unsupported embedding type: {self.config.embedding_type}")
+        embedding = self.model.encode(
+            [text],
+            convert_to_numpy=True,
+            normalize_embeddings=self.config.normalize_embeddings
+        )[0]
+
+        return embedding
 
     def get_model_info(self) -> Dict:
         """Get information about the current model."""
         return {
-            'embedding_type': self.config.embedding_type,
-            'embedding_dim': self.embedding_dim,
             'model_name': self.config.model_name,
-            'is_fitted': self.is_fitted,
-            'max_features': self.config.max_features if self.config.embedding_type == "tfidf" else None
+            'embedding_dim': self.embedding_dim,
+            'normalize_embeddings': self.config.normalize_embeddings,
+            'batch_size': self.config.batch_size
         }
 
-    def save_model(self, path: str):
-        """Save the fitted model to disk."""
-        import pickle
+    def save_model_config(self, path: str):
+        """Save model configuration."""
+        import json
 
         save_path = Path(path)
         save_path.mkdir(parents=True, exist_ok=True)
 
-        if self.config.embedding_type == "tfidf" and self.vectorizer:
-            with open(save_path / "tfidf_vectorizer.pkl", 'wb') as f:
-                pickle.dump(self.vectorizer, f)
-            logger.info(f"Saved TF-IDF model to {save_path}")
+        config_data = {
+            'model_name': self.config.model_name,
+            'embedding_dim': self.embedding_dim,
+            'normalize_embeddings': self.config.normalize_embeddings,
+            'batch_size': self.config.batch_size
+        }
 
-        # Save config
-        import json
         with open(save_path / "config.json", 'w') as f:
-            json.dump({
-                'embedding_type': self.config.embedding_type,
-                'model_name': self.config.model_name,
-                'embedding_dim': self.embedding_dim,
-                'max_features': self.config.max_features
-            }, f, indent=2)
+            json.dump(config_data, f, indent=2)
 
-    def load_model(self, path: str):
-        """Load a fitted model from disk."""
-        import pickle
-        import json
+        logger.info(f"Model configuration saved to {save_path}")
 
-        load_path = Path(path)
 
-        # Load config
-        with open(load_path / "config.json", 'r') as f:
-            saved_config = json.load(f)
+def test_embedding_model():
+    """Test the embedding model."""
+    print("Testing sentence-transformers embedding model...")
 
-        self.config.embedding_type = saved_config['embedding_type']
-        self.embedding_dim = saved_config['embedding_dim']
+    config = EmbeddingConfig()
+    model = EmbeddingModel(config)
 
-        if self.config.embedding_type == "tfidf":
-            with open(load_path / "tfidf_vectorizer.pkl", 'rb') as f:
-                self.vectorizer = pickle.load(f)
-            self.is_fitted = True
-            logger.info(f"Loaded TF-IDF model from {load_path}")
+    # Test single encoding
+    test_text = "France is located in Western Europe."
+    embedding = model.encode_single(test_text)
+    print(f"Single embedding shape: {embedding.shape}")
 
-        elif self.config.embedding_type == "sentence-transformers":
-            self._setup_sentence_transformer()
-            logger.info(f"Loaded sentence transformer model")
+    # Test batch encoding
+    test_texts = [
+        "France has diverse geographical features.",
+        "The Alps are France's highest mountain range.",
+        "France has a temperate climate."
+    ]
+
+    embeddings = model.encode_batch(test_texts)
+    print(f"Batch embeddings shape: {embeddings.shape}")
+
+    # Test similarity
+    from sklearn.metrics.pairwise import cosine_similarity
+    similarity = cosine_similarity([embedding], embeddings)[0]
+    print(f"Similarities: {similarity}")
+
+    print("✅ Embedding model test completed successfully!")
+
+
+if __name__ == "__main__":
+    test_embedding_model()

@@ -1,3 +1,7 @@
+"""
+Simplified embedding creation script.
+Focused on sentence-transformers/all-MiniLM-L6-v2 embedding model.
+"""
 import sys
 import os
 import json
@@ -23,9 +27,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def load_chunks(strategy: str = "fixed") -> List[Dict]:
+def load_chunks() -> List[Dict]:
     """Load processed chunks from JSON file."""
-    chunk_file = config.processed_dir / f"chunks_{strategy}.json"
+    chunk_file = config.processed_dir / "chunks_fixed.json"
 
     if not chunk_file.exists():
         raise FileNotFoundError(
@@ -42,14 +46,15 @@ def load_chunks(strategy: str = "fixed") -> List[Dict]:
 
 
 def create_embeddings(chunks: List[Dict]) -> Tuple[np.ndarray, List[Dict], EmbeddingModel]:
-    """Create embeddings using configured model."""
-    logger.info(f"Creating embeddings using {config.embedding_type}...")
+    """Create embeddings using sentence-transformers."""
+    logger.info("Creating embeddings using sentence-transformers...")
 
     # Configure embedding model
     embedding_config = EmbeddingConfig(
-        embedding_type=config.embedding_type,
-        max_features=config.max_features,
-        cache_dir=str(config.embeddings_dir / "cache")
+        model_name=config.embedding_model,
+        cache_dir=str(config.cache_dir),
+        normalize_embeddings=config.normalize_embeddings,
+        batch_size=config.embedding_batch_size
     )
 
     # Initialize model
@@ -59,9 +64,8 @@ def create_embeddings(chunks: List[Dict]) -> Tuple[np.ndarray, List[Dict], Embed
     texts = [chunk['text'] for chunk in chunks]
 
     print(f"📊 Processing {len(texts)} text chunks...")
-    print(f"🧮 Embedding type: {config.embedding_type}")
-    if config.embedding_type == "tfidf":
-        print(f"📈 Max features: {config.max_features}")
+    print(f"🧮 Embedding model: {config.embedding_model}")
+    print(f"📐 Expected dimension: {embedding_model.embedding_dim}")
 
     # Generate embeddings
     start_time = time.time()
@@ -69,7 +73,7 @@ def create_embeddings(chunks: List[Dict]) -> Tuple[np.ndarray, List[Dict], Embed
     end_time = time.time()
 
     print(f"✅ Generated {len(embeddings)} embeddings in {end_time - start_time:.2f}s")
-    print(f"📐 Embedding dimension: {embeddings.shape[1]}")
+    print(f"📐 Embedding shape: {embeddings.shape}")
 
     # Prepare metadata
     metadata = []
@@ -88,7 +92,7 @@ def create_embeddings(chunks: List[Dict]) -> Tuple[np.ndarray, List[Dict], Embed
     return embeddings, metadata, embedding_model
 
 
-def save_embeddings(embeddings: np.ndarray, metadata: List[Dict]):
+def save_embeddings(embeddings: np.ndarray, metadata: List[Dict], embedding_model: EmbeddingModel):
     """Save embeddings and metadata to disk."""
     print("💾 Saving embeddings and metadata...")
 
@@ -101,9 +105,13 @@ def save_embeddings(embeddings: np.ndarray, metadata: List[Dict]):
     with open(metadata_file, 'w', encoding='utf-8') as f:
         json.dump(metadata, f, indent=2, ensure_ascii=False)
 
+    # Save embedding model configuration
+    embedding_model.save_model_config(str(config.embeddings_dir))
+
     print(f"✅ Saved to {config.embeddings_dir}")
     print(f"   📄 embeddings.npy ({embeddings.nbytes / 1024 / 1024:.1f} MB)")
     print(f"   📄 metadata.json ({len(metadata)} items)")
+    print(f"   📄 config.json (model configuration)")
 
 
 def setup_vector_store(embeddings: np.ndarray, metadata: List[Dict]) -> VectorStore:
@@ -172,12 +180,42 @@ def test_retrieval(vector_store: VectorStore, embedding_model: EmbeddingModel):
     print(f"   Total subsections: {stats['total_subsections']}")
 
 
+def verify_setup():
+    """Verify that all required files exist."""
+    required_files = [
+        config.embeddings_dir / "embeddings.npy",
+        config.embeddings_dir / "metadata.json",
+        config.embeddings_dir / "config.json",
+        config.embeddings_dir / "vector_store" / "embeddings.npy",
+        config.embeddings_dir / "vector_store" / "metadata.json",
+        config.embeddings_dir / "vector_store" / "config.json"
+    ]
+
+    print("\n🔍 Verifying setup...")
+    all_good = True
+
+    for file_path in required_files:
+        if file_path.exists():
+            size = file_path.stat().st_size / 1024 / 1024  # MB
+            print(f"✅ {file_path.name} ({size:.1f} MB)")
+        else:
+            print(f"❌ {file_path.name} - Missing!")
+            all_good = False
+
+    return all_good
+
+
 def main():
     """Main execution function."""
     try:
         print("🚀 Starting embedding creation process...")
         print(f"📁 Data directory: {config.data_dir}")
-        print(f"🧮 Embedding type: {config.embedding_type}")
+        print(f"🧮 Embedding model: {config.embedding_model}")
+        print(f"📊 Chunk size: {config.chunk_size} (overlap: {config.chunk_overlap})")
+
+        # Validate configuration
+        config.validate()
+        print("✅ Configuration valid")
 
         # Check if data preprocessing was done
         if not config.processed_dir.exists():
@@ -194,7 +232,7 @@ def main():
         embeddings, metadata, embedding_model = create_embeddings(chunks)
 
         # Save embeddings
-        save_embeddings(embeddings, metadata)
+        save_embeddings(embeddings, metadata, embedding_model)
 
         # Setup vector store
         vector_store = setup_vector_store(embeddings, metadata)
@@ -202,19 +240,29 @@ def main():
         # Test retrieval
         test_retrieval(vector_store, embedding_model)
 
-        print("\n" + "=" * 60)
-        print("🎉 EMBEDDING CREATION COMPLETE!")
-        print("=" * 60)
-        print(f"✅ Embeddings saved to: {config.embeddings_dir}")
-        print(f"✅ Vector store ready for retrieval")
-        print(f"✅ Processed {len(chunks)} chunks successfully")
-        print(f"✅ System ready for API deployment")
+        # Verify setup
+        if verify_setup():
+            print("\n" + "=" * 60)
+            print("🎉 EMBEDDING CREATION COMPLETE!")
+            print("=" * 60)
+            print(f"✅ Embeddings saved to: {config.embeddings_dir}")
+            print(f"✅ Vector store ready for retrieval")
+            print(f"✅ Processed {len(chunks)} chunks successfully")
+            print(f"✅ System ready for API deployment")
+            print(f"✅ Embedding model: {config.embedding_model}")
+            print(f"✅ Embedding dimension: {embedding_model.embedding_dim}")
 
-        print("\n🔄 Next steps:")
-        print("   1. Start API: python scripts/run_api.py")
-        print("   2. Test system: python test_system.py")
-        print("   3. Launch UI: python scripts/setup_and_run_app.py")
+            print("\n🔄 Next steps:")
+            print("   1. Start API: python scripts/run_api.py")
+            print("   2. Test system: python test_system.py")
+            print("   3. Launch UI: streamlit run frontend/france_rag_ui.py")
+        else:
+            print("\n⚠️ Setup verification failed - some files missing")
 
+    except ValueError as e:
+        print(f"\n❌ Configuration error: {e}")
+        print("💡 Make sure to set your TOGETHER_API_KEY environment variable")
+        sys.exit(1)
     except FileNotFoundError as e:
         print(f"\n❌ {e}")
         sys.exit(1)
