@@ -152,57 +152,6 @@ graph TB
     class F1,F2,F3 uiLayer
 ```
 
-## 📊 Development Timeline
-
-```mermaid
-gantt
-    title France RAG Pipeline Development
-    dateFormat  YYYY-MM-DD
-    section Phase 1: Foundation
-    Environment Setup    :done, setup, 2024-01-01, 1d
-    Project Structure    :done, structure, after setup, 1d
-    Dependencies         :done, deps, after structure, 1d
-    
-    section Phase 2: Data Pipeline
-    Web Scraping         :done, scraping, after deps, 2d
-    Text Processing      :done, processing, after scraping, 2d
-    Chunking Strategies  :done, chunking, after processing, 1d
-    
-    section Phase 3: Embedding
-    TF-IDF Implementation:done, tfidf, after chunking, 1d
-    Vector Store         :done, vectorstore, after tfidf, 1d
-    Embedding Optimization:done, embedding-opt, after vectorstore, 1d
-    
-    section Phase 4: Retrieval
-    Similarity Search    :done, similarity, after embedding-opt, 1d
-    Hybrid Filtering     :done, hybrid, after similarity, 1d
-    Retrieval Testing    :done, ret-test, after hybrid, 1d
-    
-    section Phase 5: Generation
-    Prompt Engineering   :done, prompts, after ret-test, 2d
-    LLM Integration      :done, llm, after prompts, 1d
-    Response Validation  :done, validation, after llm, 1d
-    
-    section Phase 6: API
-    FastAPI Setup        :done, api-setup, after validation, 1d
-    Endpoint Development :done, endpoints, after api-setup, 2d
-    Error Handling       :done, errors, after endpoints, 1d
-    
-    section Phase 7: Testing
-    Unit Tests           :done, unit, after errors, 1d
-    Integration Tests    :done, integration, after unit, 1d
-    Performance Tests    :done, performance, after integration, 1d
-    
-    section Phase 8: UI (Bonus)
-    Streamlit Setup      :done, ui-setup, after performance, 1d
-    Interactive Features :done, ui-features, after ui-setup, 2d
-    UI Polish           :done, ui-polish, after ui-features, 1d
-    
-    section Phase 9: Deployment
-    Documentation        :done, docs, after ui-polish, 1d
-    Final Testing        :done, final-test, after docs, 1d
-    Deployment           :done, deploy, after final-test, 1d
-```
 
 ## 🚀 Quick Start
 
