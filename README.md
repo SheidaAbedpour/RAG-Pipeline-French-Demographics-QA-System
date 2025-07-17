@@ -4,6 +4,8 @@
 
 A complete end-to-end RAG system that scrapes Britannica's France geography content, creates vector embeddings, and provides intelligent Q&A capabilities through a FastAPI backend and beautiful Streamlit UI.
 
+![gif](https://github.com/SheidaAbedpour/RAG-Pipeline/blob/main/docs/ScreenVideo.gif)
+
 ## 🎯 Project Overview
 
 This project implements a sophisticated RAG pipeline that:
