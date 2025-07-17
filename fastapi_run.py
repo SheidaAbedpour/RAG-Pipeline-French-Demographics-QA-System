@@ -1,6 +1,3 @@
-"""
-FastAPI server for France RAG system.
-"""
 import sys
 import os
 import time
@@ -53,13 +50,19 @@ async def initialize_rag_system():
 
         # Validate configuration
         config.validate()
+        logger.info("✅ Configuration validated")
 
-        # Setup embedding model
+        # Setup embedding model with sentence-transformers
         embedding_config = EmbeddingConfig(
-            embedding_type=config.embedding_type,
-            max_features=config.max_features
+            model_name=config.embedding_model,
+            cache_dir=str(config.cache_dir),
+            normalize_embeddings=config.normalize_embeddings,
+            batch_size=config.embedding_batch_size
         )
+
+        logger.info(f"Loading embedding model: {config.embedding_model}")
         embedding_model = EmbeddingModel(embedding_config)
+        logger.info(f"✅ Embedding model loaded (dim: {embedding_model.embedding_dim})")
 
         # Load vector store
         vector_store = VectorStore(str(config.embeddings_dir))
@@ -68,13 +71,15 @@ async def initialize_rag_system():
         if not store_path.exists():
             raise FileNotFoundError(
                 f"Vector store not found at {store_path}. "
-                "Run create_embeddings.py first."
+                "Run scripts/create_embeddings.py first."
             )
 
         vector_store.load(str(store_path))
+        logger.info("✅ Vector store loaded")
 
         # Setup retriever
         retriever = HybridRetriever(vector_store, embedding_model)
+        logger.info("✅ Hybrid retriever initialized")
 
         # Setup generation
         generation_config = GenerationConfig(
@@ -85,8 +90,13 @@ async def initialize_rag_system():
         )
 
         rag_generator = RAGGenerator(generation_config, retriever)
+        logger.info("✅ RAG generator initialized")
 
-        logger.info("✅ RAG system initialized successfully")
+        # Test the system
+        test_results = retriever.search("test", k=1)
+        logger.info(f"✅ System test: {len(test_results)} results found")
+
+        logger.info("🎉 RAG system initialized successfully!")
 
     except Exception as e:
         logger.error(f"❌ Failed to initialize RAG system: {str(e)}")
@@ -97,16 +107,19 @@ async def initialize_rag_system():
 async def lifespan(app: FastAPI):
     """Manage application lifespan."""
     # Startup
+    logger.info("🚀 Starting France RAG API...")
     await initialize_rag_system()
+
     yield
+
     # Shutdown
-    logger.info("Shutting down RAG API...")
+    logger.info("👋 Shutting down France RAG API...")
 
 
 # Initialize FastAPI
 app = FastAPI(
     title="France RAG API",
-    description="Retrieval-Augmented Generation API for France Geography",
+    description="Retrieval-Augmented Generation API for France Geography using sentence-transformers",
     version="1.0.0",
     lifespan=lifespan
 )
@@ -156,6 +169,8 @@ async def root():
         "name": "France RAG API",
         "version": "1.0.0",
         "description": "Retrieval-Augmented Generation for France Geography",
+        "embedding_model": config.embedding_model,
+        "generation_model": config.model_name,
         "endpoints": {
             "health": "/health",
             "retrieve": "/retrieve",
@@ -178,6 +193,8 @@ async def health_check():
             test_results = rag_generator.retriever.search("test", k=1)
             components["rag_system"] = "healthy"
             components["retrieval"] = "healthy" if test_results else "no_data"
+            components["embedding_model"] = config.embedding_model
+            components["generation_model"] = config.model_name
         except Exception as e:
             components["rag_system"] = f"unhealthy: {str(e)}"
     else:
@@ -229,6 +246,7 @@ async def retrieve_sources(
             sources=sources,
             metadata={
                 "total_sources": len(sources),
+                "embedding_model": config.embedding_model,
                 "search_parameters": request.dict()
             }
         )
@@ -278,7 +296,11 @@ async def generate_answer(
             question=result["question"],
             answer=result["answer"],
             sources=sources,
-            metadata=result["metadata"]
+            metadata={
+                **result["metadata"],
+                "embedding_model": config.embedding_model,
+                "generation_model": config.model_name
+            }
         )
 
     except Exception as e:
@@ -291,7 +313,11 @@ async def get_sections(generator: RAGGenerator = Depends(get_rag_generator)):
     """Get available content sections."""
     try:
         sections = generator.retriever.get_available_sections()
-        return {"sections": sections}
+        return {
+            "sections": sections,
+            "total_sections": len(sections),
+            "embedding_model": config.embedding_model
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -301,11 +327,39 @@ async def get_metrics():
     """Get system metrics."""
     metrics = app_metrics.copy()
     metrics["uptime_seconds"] = time.time() - app_metrics["start_time"]
+    metrics["embedding_model"] = config.embedding_model
+    metrics["generation_model"] = config.model_name
 
     if rag_generator:
-        metrics["rag_performance"] = rag_generator.get_performance_metrics()
+        rag_metrics = rag_generator.get_performance_metrics()
+        metrics["rag_performance"] = rag_metrics
 
     return metrics
+
+
+@app.get("/config")
+async def get_config():
+    """Get system configuration."""
+    return {
+        "embedding": {
+            "model": config.embedding_model,
+            "normalize": config.normalize_embeddings,
+            "batch_size": config.embedding_batch_size
+        },
+        "generation": {
+            "model": config.model_name,
+            "temperature": config.temperature,
+            "max_tokens": config.max_tokens
+        },
+        "processing": {
+            "chunk_size": config.chunk_size,
+            "chunk_overlap": config.chunk_overlap
+        },
+        "retrieval": {
+            "default_k": config.default_k,
+            "min_score_threshold": config.min_score_threshold
+        }
+    }
 
 
 @app.exception_handler(HTTPException)
@@ -336,8 +390,14 @@ async def general_exception_handler(request, exc):
 if __name__ == "__main__":
     import uvicorn
 
+    print("🚀 Starting France RAG API Server...")
+    print(f"🧮 Embedding model: {config.embedding_model}")
+    print(f"🤖 Generation model: {config.model_name}")
+    print(f"🌐 Server: http://{config.host}:{config.port}")
+    print(f"📚 Docs: http://{config.host}:{config.port}/docs")
+
     uvicorn.run(
-        "main:app",
+        "fastapi_run:app",
         host=config.host,
         port=config.port,
         reload=False,

@@ -37,7 +37,7 @@ class GenerationConfig:
     include_source_info: bool = True
 
     # Safety and quality
-    response_timeout: int = 30
+    response_timeout: int = 120
     max_retries: int = 3
     min_response_length: int = 50
 
