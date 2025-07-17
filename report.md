@@ -1405,12 +1405,14 @@ async def generate_answer(request: Request, ...):
 ```
 
 **Authentication:**
+
 ```python
 # API key authentication
-from fastapi import HTTPException, Depends
-from fastapi.security import HTTPBearer
+from fastapi_run import HTTPException, Depends
+from fastapi_run.security import HTTPBearer
 
 security = HTTPBearer()
+
 
 async def verify_api_key(token: str = Depends(security)):
     if token.credentials != os.getenv("API_SECRET_KEY"):
